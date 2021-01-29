@@ -6,6 +6,68 @@ import numpy as np
 
 import torch
 
+def cont_proj(pcl, grid_h, grid_w, sigma_sq=0.5):
+    '''
+    Continuous approximation of Orthographic projection of point cloud
+    to obtain Silhouette
+    args:
+            pcl: float, (N_batch,N_PTS,3); input point cloud
+                     values assumed to be in (-1,1)
+            grid_h, grid_w: int, ();
+                     output depth map height and width
+    returns:
+            grid_val: float, (N_batch,H,W); 
+                      output silhouette
+    '''
+    x, y, z = pcl.chunk(3, dim=2) # divide to three parts
+    pcl_norm = torch.cat([x, y, z], dim=2)
+    pcl_xy = torch.cat([x,y], dim=2)
+    out_grid = torch.meshgrid(torch.arange(0, grid_h), torch.arange(0, grid_w)) 
+    out_grid = [out_grid[0].type(torch.FloatTensor), out_grid[1].type(torch.FloatTensor)]
+    
+    grid_z = torch.unsqueeze(torch.zeros_like(out_grid[0]), 2) # (H,W,1)
+    grid_xyz = torch.cat([torch.stack(out_grid, 2), grid_z], dim=2) # (H,W,3)
+    grid_xy = torch.stack(out_grid, 2) # (H,W,2)
+    grid_diff = torch.unsqueeze(torch.unsqueeze(pcl_xy, 2), 2) - grid_xy # (BS,N_PTS,H,W,2)
+    grid_val = apply_kernel(grid_diff, sigma_sq)  # (BS,N_PTS,H,W,2)
+    grid_val = grid_val[:,:,:,:,0]*grid_val[:,:,:,:,1]  # (BS,N_PTS,H,W)
+    grid_val = torch.sum(grid_val, dim=1) # (BS,H,W)
+    grid_val = torch.tanh(grid_val)
+
+    '''
+    x, y, z = tf.split(pcl, 3, axis=2)
+    pcl_norm = tf.concat([x, y, z], 2)
+    pcl_xy = tf.concat([x,y], 2)
+    out_grid = tf.meshgrid(tf.range(grid_h), tf.range(grid_w), indexing='ij')
+    out_grid = [tf.to_float(out_grid[0]), tf.to_float(out_grid[1])]
+
+
+    grid_z = tf.expand_dims(tf.zeros_like(out_grid[0]), axis=2) # (H,W,1)
+    grid_xyz = tf.concat([tf.stack(out_grid, axis=2), grid_z], axis=2)  # (H,W,3)
+    grid_xy = tf.stack(out_grid, axis=2)                # (H,W,2)
+    grid_diff = tf.expand_dims(tf.expand_dims(pcl_xy, axis=2), axis=2) - grid_xy # (BS,N_PTS,H,W,2) 
+    grid_val = apply_kernel(grid_diff, sigma_sq)    # (BS,N_PTS,H,W,2) 
+    grid_val = grid_val[:,:,:,:,0]*grid_val[:,:,:,:,1]  # (BS,N_PTS,H,W) 
+    grid_val = tf.reduce_sum(grid_val, axis=1)          # (BS,H,W)
+    grid_val = tf.nn.tanh(grid_val)
+    
+    return grid_val
+    '''
+    return grid_val
+
+
+def apply_kernel(x, sigma_sq=0.5):
+    '''
+    Get the un-normalized gaussian kernel with point co-ordinates as mean and 
+    variance sigma_sq
+    args:
+            x: float, (BS,N_PTS,H,W,2); mean subtracted grid input 
+            sigma_sq: float, (); variance of gaussian kernel
+    returns:
+            out: float, (BS,N_PTS,H,W,2); gaussian kernel
+    '''
+    out = (torch.exp(-(x**2)/(2.*sigma_sq)))
+    return out
 
 
 def perspective_transform(xyz, batch_size):
@@ -26,11 +88,12 @@ def perspective_transform(xyz, batch_size):
             [0., 0., 1.]]).astype(np.float32)
     K = np.expand_dims(K, 0)
     K = np.tile(K, [batch_size,1,1])
-    
+    K = torch.from_numpy(K)
+
     xyz_out = torch.matmul(K, xyz.permute(0, 2, 1))
     xy_out = xyz_out[:,:2]/abs(torch.unsqueeze(xyz[:,:,2],1))
-
     xyz_out = torch.cat([xy_out, abs(xyz_out[:,2:])],dim=1)
+
     return xyz_out.permute(0, 2, 1)
 
 
