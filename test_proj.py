@@ -13,8 +13,8 @@ grid_h = 64
 grid_w = 64
 SIGMA_SQ = 0.5
 
-PCL_PATH = "/home/caig/Desktop/sketch3d/capnet/data/ShapeNet_pointclouds/03001627/1a6f615e8b1b5ae4dbbc9440457e303e/pointcloud_2048.npy"
-PROJ_PATH = "/home/caig/Downloads/blenderRenderPreprocess/03001627/1a6f615e8b1b5ae4dbbc9440457e303e/depth_3.png"
+PCL_PATH = "/media/caig/FECA2C89CA2C406F/sketch3D/2d_supervision/pointcloud_2048.npy"
+PROJ_PATH = "/media/caig/FECA2C89CA2C406F/sketch3D/drc/cachedir/blenderRenderPreprocess/03001627/1a6f615e8b1b5ae4dbbc9440457e303e/depth_1.png"
 
 def get_test_batch_gt(proj_path):
     batch_gt = []
@@ -61,10 +61,12 @@ print("proj_pred", proj_pred)
 
 loss_bce, fwd, bwd = get_loss_proj(proj_pred, 
             proj_gt[:,0], 'bce_prob', 1.0, True, grid_dist_tensor, args=None, grid_h=grid_h, grid_w=grid_w)
+fwd = 1e-4*torch.mean(fwd)
+bwd = 1e-4*torch.mean(bwd)
 
 print(loss_bce)
-# print(fwd)
-# print(bwd)
+print(fwd)
+print(bwd)
 
 """
 pcl_out_rot = pcl_out_rot.numpy()

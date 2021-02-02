@@ -46,10 +46,10 @@ def get_loss_proj(pred, gt, loss_type='bce', w=1., min_dist_loss=None,
         gt_white_th = gt_white + (1.-gt_white)*1e6*torch.ones_like(gt_white)
         dist_masked = gt_white_th * dist_mat * pred_white
         
-        #min_dist = torch.amin(dist_masked, dim=(3,4))
-        #min_dist_inv = torch.amin(dist_masked_inv, dim=(3,4))
+        min_dist = torch.amin(dist_masked, dim=(3,4))
+        min_dist_inv = torch.amin(dist_masked_inv, dim=(3,4))
 
-    return torch.mean(loss), dist_masked, dist_masked_inv
+    return torch.mean(loss), min_dist, min_dist_inv
 
 
 def grid_dist(grid_h, grid_w):
