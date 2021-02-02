@@ -34,25 +34,6 @@ def cont_proj(pcl, grid_h, grid_w, sigma_sq=0.5):
     grid_val = torch.sum(grid_val, dim=1) # (BS,H,W)
     grid_val = torch.tanh(grid_val)
 
-    '''
-    x, y, z = tf.split(pcl, 3, axis=2)
-    pcl_norm = tf.concat([x, y, z], 2)
-    pcl_xy = tf.concat([x,y], 2)
-    out_grid = tf.meshgrid(tf.range(grid_h), tf.range(grid_w), indexing='ij')
-    out_grid = [tf.to_float(out_grid[0]), tf.to_float(out_grid[1])]
-
-
-    grid_z = tf.expand_dims(tf.zeros_like(out_grid[0]), axis=2) # (H,W,1)
-    grid_xyz = tf.concat([tf.stack(out_grid, axis=2), grid_z], axis=2)  # (H,W,3)
-    grid_xy = tf.stack(out_grid, axis=2)                # (H,W,2)
-    grid_diff = tf.expand_dims(tf.expand_dims(pcl_xy, axis=2), axis=2) - grid_xy # (BS,N_PTS,H,W,2) 
-    grid_val = apply_kernel(grid_diff, sigma_sq)    # (BS,N_PTS,H,W,2) 
-    grid_val = grid_val[:,:,:,:,0]*grid_val[:,:,:,:,1]  # (BS,N_PTS,H,W) 
-    grid_val = tf.reduce_sum(grid_val, axis=1)          # (BS,H,W)
-    grid_val = tf.nn.tanh(grid_val)
-    
-    return grid_val
-    '''
     return grid_val
 
 
