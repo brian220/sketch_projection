@@ -88,7 +88,10 @@ class ShapeNetDataset(torch.utils.data.dataset.Dataset):
         # read the test, train image
         # print(selected_rendering_image_path)
         rendering_images = []
-        rendering_image =  cv2.imread(selected_rendering_image_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.
+        # rendering_image =  cv2.imread(selected_rendering_image_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.
+        rendering_image = cv2.imread(selected_rendering_image_path).astype(np.float32) / 255.
+        rendering_image = cv2.resize(rendering_image, (self.grid_w, self.grid_h))
+        rendering_image = cv2.cvtColor(rendering_image, cv2.COLOR_BGR2RGB)
 
         if len(rendering_image.shape) < 3:
             print('[FATAL] %s It seems that there is something wrong with the image file %s' %

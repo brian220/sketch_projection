@@ -41,7 +41,10 @@ def valid_net(cfg,
     for sample_idx, (taxonomy_names, sample_names, rendering_images,
                     model_gt, model_x, model_y,
                     init_point_clouds, ground_truth_point_clouds) in enumerate(test_data_loader):
-
+        
+        print(taxonomy_names)
+        print(sample_names)
+        
         with torch.no_grad():
             # Only one image per sample
             rendering_images = torch.squeeze(rendering_images, 1)

@@ -36,19 +36,19 @@ def train_net(cfg):
     CROP_SIZE = cfg.CONST.CROP_IMG_H, cfg.CONST.CROP_IMG_W
 
     train_transforms = utils.data_transforms.Compose([
-        utils.data_transforms.RandomCrop(IMG_SIZE, CROP_SIZE),
-        utils.data_transforms.RandomBackground(cfg.TRAIN.RANDOM_BG_COLOR_RANGE),
-        utils.data_transforms.ColorJitter(cfg.TRAIN.BRIGHTNESS, cfg.TRAIN.CONTRAST, cfg.TRAIN.SATURATION),
-        utils.data_transforms.RandomNoise(cfg.TRAIN.NOISE_STD),
-        utils.data_transforms.Normalize(mean=cfg.DATASET.MEAN, std=cfg.DATASET.STD),
+        # utils.data_transforms.RandomCrop(IMG_SIZE, CROP_SIZE),
+        # utils.data_transforms.RandomBackground(cfg.TRAIN.RANDOM_BG_COLOR_RANGE),
+        # utils.data_transforms.ColorJitter(cfg.TRAIN.BRIGHTNESS, cfg.TRAIN.CONTRAST, cfg.TRAIN.SATURATION),
+        # utils.data_transforms.RandomNoise(cfg.TRAIN.NOISE_STD),
+        # utils.data_transforms.Normalize(mean=cfg.DATASET.MEAN, std=cfg.DATASET.STD),
         # utils.data_transforms.RandomFlip(), # Disable the random flip to avoid problem in view estimation
         # utils.data_transforms.RandomPermuteRGB(), # Sketch data is gray scale image, no need to permute RGB
         utils.data_transforms.ToTensor(),
     ])
     val_transforms = utils.data_transforms.Compose([
-        utils.data_transforms.CenterCrop(IMG_SIZE, CROP_SIZE),
-        utils.data_transforms.RandomBackground(cfg.TEST.RANDOM_BG_COLOR_RANGE),
-        utils.data_transforms.Normalize(mean=cfg.DATASET.MEAN, std=cfg.DATASET.STD),
+        # utils.data_transforms.CenterCrop(IMG_SIZE, CROP_SIZE),
+        # utils.data_transforms.RandomBackground(cfg.TEST.RANDOM_BG_COLOR_RANGE),
+        # utils.data_transforms.Normalize(mean=cfg.DATASET.MEAN, std=cfg.DATASET.STD),
         utils.data_transforms.ToTensor(),
     ])
 
@@ -73,8 +73,8 @@ def train_net(cfg):
     # Set up networks
     # The parameters here need to be set in cfg
     net = Pixel2Pointcloud(cfg, 3, cfg.GRAPHX.NUM_INIT_POINTS,
-                        optimizer=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.LEARNING_RATE, weight_decay=cfg.TRAIN.WEIGHT_DECAY),
-                        scheduler=lambda x: MultiStepLR(x, milestones=cfg.TRAIN.MILESTONES, gamma=cfg.TRAIN.GAMMA),
+                        optimizer_conv=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.LEARNING_RATE, weight_decay=cfg.TRAIN.CONV_WEIGHT_DECAY),
+                        optimizer_fc=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.LEARNING_RATE, weight_decay=cfg.TRAIN.FC_WEIGHT_DECAY),
                         use_graphx=cfg.GRAPHX.USE_GRAPHX)
 
     if torch.cuda.is_available():
@@ -148,6 +148,7 @@ def train_net(cfg):
                  REC_Loss = %.4f'
                 % (dt.now(), epoch_idx + 1, cfg.TRAIN.NUM_EPOCHES, batch_idx + 1, n_batches, batch_time.val,
                    data_time.val, loss))
+            break
             
         # Append epoch loss to TensorBoard
         train_writer.add_scalar('EncoderDecoder/EpochLoss_Rec', reconstruction_losses.avg, epoch_idx + 1)
