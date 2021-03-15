@@ -12,73 +12,72 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models.graphx import CNN18Encoder, PointCloudEncoder, PointCloudGraphXDecoder, PointCloudDecoder
+from models.graphx import PointCloudGraphXDecoder
 from models.projection import Projector
-from models.edge_detection import EdgeDetector 
+from models.cdt_encoder import Encoder as CDT_Encoder
+from models.cdt_generator import Generator as CDT_Generator
 
 from losses.proj_losses import *
 from losses.earth_mover_distance import EMD
-from utils.point_cloud_utils import Scale, Scale_one
 
 import utils.network_utils
 
-class Pixel2Pointcloud_GRAPHX(nn.Module):
-    def __init__(self, cfg, in_channels, in_instances, activation=nn.ReLU(), optimizer=None, scheduler=None, use_graphx=True, **kwargs):
+Conv = nn.Conv2d
+
+class Refiner(nn.Module):
+    def __init__(self, cfg, in_instances, activation=nn.ReLU(), optimizer=None, scheduler=None):
         super().__init__()
         self.cfg = cfg
         
-        # Graphx
-        self.img_enc = CNN18Encoder(in_channels, activation)
+        """
+        deform_net = PointCloudGraphXDecoder
+        # input a point cloud in_instances * 3
+        self.deformer = deform_net(3, in_instances=in_instances, activation=activation)
+        """
+        encoder = Encoder(input_channels=args.input_channels, relation_prior=args.relation_prior, use_xyz=True, z_size=args.z_size).cuda()
+        generator = Generator(features=args.G_FEAT, degrees=args.DEGREE, support=args.support, z_size=args.z_size).cuda()
+        
 
-        out_features = [block[-2].out_channels for block in self.img_enc.children()]
-        self.pc_enc = PointCloudEncoder(3, out_features, cat_pc=True, use_adain=True, use_proj=True, 
-                                        activation=activation)
-        
-        deform_net = PointCloudGraphXDecoder if use_graphx else PointCloudDecoder
-        self.pc = deform_net(2 * sum(out_features) + 3, in_instances=in_instances, activation=activation)
-        
+        self.cdt_encoder = CDT_Encoder(input_channels=cfg.CDT_REFINE.INPUT_CHANNELS,
+                                       relation_prior=cfg.CDT_REFINE.RELATION_PRIOR,
+                                       use_xyz=True,
+                                       z_size=cfg.CDT_REFINE.Z_SIZE)
+
+        self.cdt_generator = CDT_Generator(features=cfg.CDT_REFINE.G_FEAT, 
+                                           degrees=cfg.CDT_REFINE.DEGREE,
+                                           support=cfg.CDT_REFINE.SUPPORT,
+                                           z_size=cfg.CDT_REFINE.Z_SIZE)
+
         self.optimizer = None if optimizer is None else optimizer(self.parameters())
         self.scheduler = None if scheduler or optimizer is None else scheduler(self.optimizer)
-        self.kwargs = kwargs
-
+        
+        """
         # 2D supervision part
         self.projector = Projector(self.cfg)
 
         # proj loss
         self.proj_loss = ProjectLoss(self.cfg)
-
-        # scale
-        self.scale = Scale(self.cfg)
-        self.scale_one = Scale_one(self.cfg)
-
+        
+        """
+        
         # emd loss
         self.emd = EMD()
-        
+
         if torch.cuda.is_available():
-            self.img_enc = torch.nn.DataParallel(self.img_enc, device_ids=cfg.CONST.DEVICE).cuda()
-            self.pc_enc = torch.nn.DataParallel(self.pc_enc, device_ids=cfg.CONST.DEVICE).cuda()
-            self.pc = torch.nn.DataParallel(self.pc, device_ids=cfg.CONST.DEVICE).cuda()
+            # self.deformer = torch.nn.DataParallel(self.deformer, device_ids=cfg.CONST.DEVICE).cuda()
+            self.cdt_encoder = torch.nn.DataParallel(self.cdt_encoder, device_ids=cfg.CONST.DEVICE).cuda()
+            self.cdt_generator = torch.nn.DataParallel(self.cdt_generator, device_ids=cfg.CONST.DEVICE).cuda()
             self.projector = torch.nn.DataParallel(self.projector, device_ids=cfg.CONST.DEVICE).cuda()
             self.proj_loss = torch.nn.DataParallel(self.proj_loss, device_ids=cfg.CONST.DEVICE).cuda()
-            self.scale = torch.nn.DataParallel(self.scale, device_ids=cfg.CONST.DEVICE).cuda()
             self.emd = torch.nn.DataParallel(self.emd, device_ids=cfg.CONST.DEVICE).cuda()
             self.cuda()
+    
+    def forward(self, input_pc):
+        return self.deformer(input_pc)
 
-        # edge detector
-        if self.cfg.EDGE_LOSS.USE_EDGE_LOSS:
-            self.edge_detector = EdgeDetector(self.cfg)
-            self.edge_proj_loss = ProjectLoss(self.cfg)
-            if torch.cuda.is_available():
-                self.edge_detector = torch.nn.DataParallel(self.edge_detector, device_ids=cfg.CONST.DEVICE).cuda()
-                self.edge_proj_loss = torch.nn.DataParallel(self.edge_proj_loss, device_ids=cfg.CONST.DEVICE).cuda()
-
-    def forward(self, input, init_pc):
-        img_feats = self.img_enc(input)
-        pc_feats = self.pc_enc(img_feats, init_pc)
-        return self.pc(pc_feats)
-
-    def loss(self, input, init_pc, gt_pc, view_az, view_el, proj_gt, edge_gt):
-        pred_pc = self(input, init_pc)
+    def loss(self, input_pc, gt_pc, view_az, view_el, proj_gt):
+        pred_pc = self(input_pc)
+        # pred_pc = input_pc + displacement
         
         if self.cfg.SUPERVISION_2D.USE_AFFINITY:
            grid_dist_np = grid_dist(grid_h=self.cfg.PROJECTION.GRID_H, grid_w=self.cfg.PROJECTION.GRID_W).astype(np.float32)
@@ -97,21 +96,12 @@ class Pixel2Pointcloud_GRAPHX(nn.Module):
         if not self.cfg.SUPERVISION_2D.USE_2D_LOSS:
             loss_2d = torch.tensor(loss_2d)
 
-        # For edge 3d
+        # For 3d loss
         loss_3d = 0.
         if not self.cfg.SUPERVISION_3D.USE_3D_LOSS:
             loss_3d = torch.tensor(loss_3d)
-
-        # For edge loss
-        edge_proj_pred = {}
-        edge_loss_bce = {}
-        edge_fwd = {}
-        edge_bwd = {}
-        edge_loss_fwd = {}
-        edge_loss_bwd = {}
-        edge_loss = 0.
         
-        # for 3d supervision (EMD)
+        # for 2d supervision
         if self.cfg.SUPERVISION_2D.USE_2D_LOSS:
             for idx in range(0, self.cfg.PROJECTION.NUM_VIEWS):
                 # Projection
@@ -126,27 +116,9 @@ class Pixel2Pointcloud_GRAPHX(nn.Module):
                 loss_2d += self.cfg.PROJECTION.LAMDA_BCE * torch.mean(loss_bce[idx]) +\
                            self.cfg.PROJECTION.LAMDA_AFF_FWD * loss_fwd[idx] +\
                            self.cfg.PROJECTION.LAMDA_AFF_BWD * loss_bwd[idx]
-                    
-                if self.cfg.EDGE_LOSS.USE_EDGE_LOSS:
-                    # Edge prediction of projection
-                    proj_pred[idx] = proj_pred[idx].unsqueeze(1) # (BS, 1, H, W)
-                    edge_proj_pred[idx] = self.edge_detector(img=proj_pred[idx])
-                    edge_proj_pred[idx] = edge_proj_pred[idx].squeeze(1) # (BS, H, W)
         
-                    # Edge projection loss
-                    edge_loss_bce[idx], edge_fwd[idx], edge_bwd[idx] = self.proj_loss(preds=edge_proj_pred[idx], gts=edge_gt[:,idx], grid_dist_tensor=grid_dist_tensor)
-                    edge_loss_fwd[idx] = 1e-4 * torch.mean(edge_fwd[idx])
-                    edge_loss_bwd[idx] = 1e-4 * torch.mean(edge_bwd[idx])
-    
-                    edge_loss += self.cfg.PROJECTION.LAMDA_BCE * torch.mean(edge_loss_bce[idx]) +\
-                                 self.cfg.PROJECTION.LAMDA_AFF_FWD * edge_loss_fwd[idx] +\
-                                 self.cfg.PROJECTION.LAMDA_AFF_BWD * edge_loss_bwd[idx]    
-
-        # 3d loss
-        if cfg.REFINE.USE_REFINE == True:
-            loss_3d = torch.mean(self.emd(pred_pc, gt_pc))
-        else:
-            loss_3d = torch.mean(self.emd(pred_pc, gt_pc))
+         # 3d loss
+        loss_3d = torch.mean(self.emd(pred_pc, input_pc))
 
         # Total loss
         if self.cfg.SUPERVISION_2D.USE_2D_LOSS and self.cfg.SUPERVISION_3D.USE_3D_LOSS:
@@ -161,10 +133,10 @@ class Pixel2Pointcloud_GRAPHX(nn.Module):
             
         return total_loss, (loss_2d/self.cfg.PROJECTION.NUM_VIEWS), loss_3d, pred_pc
 
-    def learn(self, input, init_pc, gt_pc, view_az, view_el, proj_gt, edge_gt):
+    def learn(self, input_pc, gt_pc, view_az, view_el, proj_gt):
         self.train(True)
         self.optimizer.zero_grad()
-        total_loss, loss_2d, loss_3d, _ = self.loss(input, init_pc, gt_pc, view_az, view_el, proj_gt, edge_gt)
+        total_loss, loss_2d, loss_3d, _ = self.loss(input_pc, gt_pc, view_az, view_el, proj_gt)
         total_loss.backward()
         self.optimizer.step()
         total_loss_np = total_loss.detach().item()
@@ -172,3 +144,7 @@ class Pixel2Pointcloud_GRAPHX(nn.Module):
         loss_3d_np = loss_3d.detach().item()
         del total_loss, loss_2d, loss_3d
         return total_loss_np, loss_2d_np, loss_3d_np
+
+
+
+

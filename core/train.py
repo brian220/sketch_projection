@@ -4,7 +4,6 @@
 # email: b608390.cs04@nctu.edu.tw
 # Lot's of code reference to Pix2Vox: 
 # https://github.com/hzxie/Pix2Vox
-#
 
 import os
 import random
@@ -12,6 +11,7 @@ import torch
 import torch.backends.cudnn
 import torch.utils.data
 import torchvision.utils
+from collections import OrderedDict
 
 import utils.data_loaders
 import utils.data_transforms
@@ -24,6 +24,7 @@ from time import time
 from core.valid import valid_net
 from models.networks_psgn import Pixel2Pointcloud_PSGN_FC
 from models.networks_graphx import Pixel2Pointcloud_GRAPHX
+from models.refiner import Refiner
 
 def train_net(cfg):
     print("cuda is available?", torch.cuda.is_available())
@@ -71,27 +72,42 @@ def train_net(cfg):
                                       optimizer_conv=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.PSGN_FC_LEARNING_RATE, weight_decay=cfg.TRAIN.PSGN_FC_CONV_WEIGHT_DECAY),
                                       optimizer_fc=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.PSGN_FC_LEARNING_RATE, weight_decay=cfg.TRAIN.PSGN_FC_FC_WEIGHT_DECAY),
                                       scheduler=lambda x: MultiStepLR(x, milestones=cfg.TRAIN.MILESTONES, gamma=cfg.TRAIN.GAMMA))
-
-    if torch.cuda.is_available():
-       net = torch.nn.DataParallel(net, device_ids=cfg.CONST.DEVICE).cuda() 
+    
+    """
+    if cfg.REFINE.USE_REFINE == True and cfg.REFINE.REFINE_MODEL == 'GRAPHX':
+        ref_net = Refiner(cfg=cfg,
+                          in_instances=cfg.GRAPHX.NUM_INIT_POINTS,
+                          optimizer=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.GRAPHX_LEARNING_RATE, weight_decay=cfg.TRAIN.GRAPHX_WEIGHT_DECAY),
+                          scheduler=lambda x: MultiStepLR(x, milestones=cfg.TRAIN.MILESTONES, gamma=cfg.TRAIN.GAMMA))
+    """
+    
+    ref_net = Refiner(cfg=cfg)
 
     print(net)
-    
+    print(ref_net)
+   
+    if torch.cuda.is_available():
+       net = torch.nn.DataParallel(net, device_ids=cfg.CONST.DEVICE).cuda()
+       ref_net = torch.nn.DataParallel(ref_net, device_ids=cfg.CONST.DEVICE).cuda()
+
     init_epoch = 0
     # best_emd =  10000 # less is better
     best_loss = 100000
+    current_loss = best_loss
     best_epoch = -1
-    
+    print("cuda device", torch.cuda.current_device())
+
+    # Load checkpoint
     if 'WEIGHTS' in cfg.CONST and cfg.TRAIN.RESUME_TRAIN:
         print('[INFO] %s Recovering from %s ...' % (dt.now(), cfg.CONST.WEIGHTS))
         checkpoint = torch.load(cfg.CONST.WEIGHTS)
+        
         init_epoch = checkpoint['epoch_idx']
         
         net.load_state_dict(checkpoint['net'])
 
         print('[INFO] %s Recover complete. Current epoch #%d at epoch #%d.' %
               (dt.now(), init_epoch, cfg.TRAIN.NUM_EPOCHES))
-    
 
     # Summary writer for TensorBoard
     output_dir = os.path.join(cfg.DIR.OUT_PATH, '%s')
@@ -111,8 +127,10 @@ def train_net(cfg):
         reconstruction_losses = utils.network_utils.AverageMeter()
         loss_2ds = utils.network_utils.AverageMeter()
         loss_3ds = utils.network_utils.AverageMeter()
-
-        net.train()
+        
+        # set the net to eval() mode first, only train the ref_net
+        net.eval()
+        ref_net.train()
 
         batch_end_time = time()
         n_batches = len(train_data_loader)
@@ -134,8 +152,12 @@ def train_net(cfg):
             model_y = utils.network_utils.var_or_cuda(model_y)
             init_point_clouds = utils.network_utils.var_or_cuda(init_point_clouds)
             ground_truth_point_clouds = utils.network_utils.var_or_cuda(ground_truth_point_clouds)
+            
+            # net give out a point cloud
+            pred_pc = net(rendering_images, init_point_clouds)
 
-            total_loss, loss_2d, loss_3d = net.module.learn(rendering_images, init_point_clouds, ground_truth_point_clouds, model_x, model_y, model_gt, edge_gt)
+            # refnet refine the point cloud
+            total_loss, loss_2d, loss_3d = ref_net.module.learn(pred_pc, ground_truth_point_clouds, model_x, model_y, model_gt)
             
             reconstruction_losses.update(total_loss)
             loss_2ds.update(loss_2d)
@@ -152,22 +174,22 @@ def train_net(cfg):
             
         # Append epoch loss to TensorBoard
         train_writer.add_scalar('Total/EpochLoss_Rec', reconstruction_losses.avg, epoch_idx + 1)
-        train_writer.add_scalar('2D/EpochLoss_Loss_2D', loss_2ds.avg, epoch_idx + 1)
-        train_writer.add_scalar('3D/EpochLoss_Loss_3D', loss_3ds.avg, epoch_idx + 1)
+        train_writer.add_scalar('2D/EpochLoss_Loss_2D', loss_2ds.avg, epoch_idx + 1)                                                                                                                                
+        train_writer.add_scalar('3D/EpochLoss_Loss_3D', loss_3ds.avg, epoch_idx + 1)                                                        
 
 
         # Validate the training models
-        current_loss = valid_net(cfg, epoch_idx + 1, output_dir, val_data_loader, val_writer, net)
-        
+        current_loss = valid_net(cfg, epoch_idx + 1, output_dir, val_data_loader, val_writer, net, ref_net)                                                                                                                         
+
         # Save weights to file
         
-        if (epoch_idx + 1) % cfg.TRAIN.SAVE_FREQ == 0:
+        if (epoch_idx + 1) % cfg.TRAIN.SAVE_FREQ == 0:                        
             if not os.path.exists(ckpt_dir):
                 os.makedirs(ckpt_dir)
 
             utils.network_utils.save_checkpoints(cfg, os.path.join(ckpt_dir, 'ckpt-epoch-%04d.pth' % (epoch_idx + 1)), 
                                                  epoch_idx + 1, 
-                                                 net,
+                                                 ref_net,
                                                  best_loss, best_epoch)
         
         # Save best check point for cd
@@ -177,9 +199,9 @@ def train_net(cfg):
 
             best_loss = current_loss
             best_epoch = epoch_idx + 1
-            utils.network_utils.save_checkpoints(cfg, os.path.join(ckpt_dir, 'best-reconstruction-ckpt.pth'), 
+            utils.network_utils.save_checkpoints(cfg, os.path.join(ckpt_dir, 'best-refine-ckpt.pth'), 
                                                  epoch_idx + 1, 
-                                                 net,
+                                                 ref_net,
                                                  best_loss, best_epoch)
     
         

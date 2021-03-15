@@ -26,7 +26,8 @@ def valid_net(cfg,
              output_dir=None,
              test_data_loader=None,
              test_writer=None,
-             net=None):
+             net=None,
+             ref_net=None):
 
     # Enable the inbuilt cudnn auto-tuner to find the best algorithm to use
     torch.backends.cudnn.benchmark = True
@@ -38,6 +39,7 @@ def valid_net(cfg,
     loss_3ds = utils.network_utils.AverageMeter()
 
     net.eval()
+    ref_net.eval()
 
     # Testing loop
     for sample_idx, (taxonomy_names, sample_names, rendering_images,
@@ -60,7 +62,12 @@ def valid_net(cfg,
             #=================================================#
             #                Test the network                 #
             #=================================================#
-            loss, loss_2d, loss_3d, generated_point_clouds = net.module.loss(rendering_images, init_point_clouds, ground_truth_point_clouds, model_x, model_y, model_gt, edge_gt)
+            if cfg.REFINE.USE_REFINE == True:
+                generated_point_clouds = net(rendering_images, init_point_clouds)
+                loss, loss_2d, loss_3d, refine_point_clouds = ref_net.module.loss(generated_point_clouds, ground_truth_point_clouds, model_x, model_y, model_gt)
+            else:
+                loss, loss_2d, loss_3d, generated_point_clouds = net.module.loss(rendering_images, init_point_clouds, ground_truth_point_clouds, model_x, model_y, model_gt, edge_gt)
+           
             reconstruction_loss = loss.cpu().detach().data.numpy()
             loss_2d = loss_2d.cpu().detach().data.numpy()
             loss_3d = loss_3d.cpu().detach().data.numpy()
@@ -80,9 +87,14 @@ def valid_net(cfg,
                                                                                         sample_idx, epoch_idx, "reconstruction")
                 test_writer.add_image('Test Sample#%02d/Point Cloud Reconstructed' % sample_idx, rendering_views, epoch_idx)
                 
+                # Refine Pointcloud
+                ref_pc = refine_point_clouds[0].detach().cpu().numpy()
+                rendering_views = utils.point_cloud_visualization.get_point_cloud_image(ref_pc, os.path.join(img_dir, 'test'),
+                                                                                        sample_idx, epoch_idx, "refine")
+                test_writer.add_image('Test Sample#%02d/Point Cloud Refined' % sample_idx, rendering_views, epoch_idx)
+
                 # Groundtruth Pointcloud
                 gt_pc = ground_truth_point_clouds[0].detach().cpu().numpy()
-                # ground_truth_view = ground_truth_views[0].detach().cpu().numpy()
                 rendering_views = utils.point_cloud_visualization.get_point_cloud_image(gt_pc, os.path.join(img_dir, 'test'),
                                                                                         sample_idx, epoch_idx, "ground truth")
                 test_writer.add_image('Test Sample#%02d/Point Cloud GroundTruth' % sample_idx, rendering_views, epoch_idx)
