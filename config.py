@@ -91,8 +91,8 @@ __C.UPDATER.NOISE_LENGTH                  = 32
 __C.SUPERVISION_2D                         = edict()
 __C.SUPERVISION_2D.LOSS_TYPE               = 'bce_prob'
 __C.SUPERVISION_2D.PROJ_TYPE               = 'CONT' #CONT: continuous projection, DISC: discrete projection      
-__C.SUPERVISION_2D.USE_AFFINITY            = True
-__C.SUPERVISION_2D.USE_2D_LOSS             = False
+__C.SUPERVISION_2D.USE_AFFINITY            = False
+__C.SUPERVISION_2D.USE_2D_LOSS             = True
 __C.SUPERVISION_2D.LAMDA_2D_LOSS           = 1.
 
 #
@@ -110,10 +110,10 @@ __C.PROJECTION.GRID_H                      = 64
 __C.PROJECTION.GRID_W                      = 64
 __C.PROJECTION.SIGMA_SQ_DISC               = 0.5
 __C.PROJECTION.SIGMA_SQ_CONT               = 0.4
-__C.PROJECTION.NUM_VIEWS                   = 3
+__C.PROJECTION.NUM_VIEWS                   = 1
 __C.PROJECTION.UPDATE_NUM_VIEWS            = 8 #!!
 # __C.PROJECTION.NUM_VIEWS                   = 1 # only for test time optimization
-__C.PROJECTION.LAMDA_BCE                   = 1.
+__C.PROJECTION.LAMDA_BCE                   = 100.
 __C.PROJECTION.LAMDA_AFF_FWD               = 1.
 __C.PROJECTION.LAMDA_AFF_BWD               = 1.
 
@@ -203,9 +203,16 @@ __C.EVALUATE_MULTI_VIEW.OUT_DIR                     = '/media/caig/FECA2C89CA2C4
 
 
 #
-# Test time optimization
+# Test time optimization (general)
 #
 __C.TEST_OPT                                        = edict()
 __C.TEST_OPT.RECONSTRUCTION_WEIGHTS                 = '/media/caig/FECA2C89CA2C406F/sketch3D/results/outputs/output_v1/checkpoints/best-reconstruction-ckpt.pth'
 __C.TEST_OPT.OUT_PATH                               = '/media/caig/FECA2C89CA2C406F/sketch3D/sketch_projection/test_opt'
+
+#
+# Test time optimization (network)
+# 
+__C.TEST_OPT_NET                                    = edict()
+__C.TEST_OPT_NET.RECONSTRUCTION_WEIGHTS             = '/media/caig/FECA2C89CA2C406F/sketch3D/results/outputs/output_v1/checkpoints/best-reconstruction-ckpt.pth'
+__C.TEST_OPT_NET.OUT_PATH                           = '/media/caig/FECA2C89CA2C406F/sketch3D/sketch_projection/test_opt_net'
 

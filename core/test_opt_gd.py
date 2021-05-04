@@ -9,6 +9,7 @@
 import os
 import random
 import torch
+import torch.nn as nn
 import torch.backends.cudnn
 import torch.utils.data
 import torchvision.utils
@@ -27,10 +28,12 @@ from datetime import datetime as dt
 
 from models.networks_psgn import Pixel2Pointcloud_PSGN_FC
 from models.networks_graphx import Pixel2Pointcloud_GRAPHX
+from models.projection import Projector
 
+from losses.proj_losses import *
 from losses.chamfer_loss import ChamferLoss
 from losses.earth_mover_distance import EMD
-from utils.point_cloud_utils import Scale, Scale_one
+
 
 def init_pointcloud_loader(num_points):
     Z = np.random.rand(num_points) + 1.
@@ -44,7 +47,66 @@ def init_pointcloud_loader(num_points):
     XYZ = np.concatenate((X, Y, Z), 1)
     return XYZ.astype('float32')
 
-def test_opt_net(cfg):
+
+class Opt_Model(nn.Module):
+    def __init__(self, cfg, rec_pc):
+        super().__init__()
+        self.cfg = cfg
+
+        # inialize model weight by rec_pc
+        # use nn.Parameter to optimize the point cloud
+        self.output_pc = nn.Parameter(rec_pc)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.TRAIN.GRAPHX_LEARNING_RATE, weight_decay=self.cfg.TRAIN.GRAPHX_WEIGHT_DECAY)
+        # 2D supervision part
+        self.projector = Projector(self.cfg)
+        # proj loss
+        self.proj_loss = ProjectLoss(self.cfg)
+        # emd loss
+        self.emd = EMD()
+        self.cuda()
+
+    def forward(self):
+        pred_pc = self.output_pc
+        return pred_pc
+    
+    def loss(self, rec_pc, view_az, view_el, proj_gt):
+        pred_pc = self()
+
+        # Use 2D projection loss to train
+        proj_pred = {}
+        loss_bce = {}
+        fwd = {}
+        bwd = {}
+        loss_2d = 0.
+
+        # For 3d loss
+        loss_3d = 0.
+        
+        for idx in range(0, 1):
+            proj_pred[idx] = self.projector(pred_pc, view_az[:,idx], view_el[:,idx])
+            loss_bce[idx], fwd[idx], bwd[idx] = self.proj_loss(preds=proj_pred[idx], gts=proj_gt[:,idx], grid_dist_tensor=None)
+            loss_2d += self.cfg.PROJECTION.LAMDA_BCE * torch.mean(loss_bce[idx])
+
+        loss_3d = torch.mean(self.emd(pred_pc, rec_pc))
+
+        total_loss = loss_2d + loss_3d
+
+        return pred_pc, total_loss, loss_2d, loss_3d
+
+    def learn(self, rec_pc, view_az, view_el, proj_gt):
+        self.train(True)
+        self.optimizer.zero_grad()
+        update_pc, total_loss, loss_2d, loss_3d = self.loss(rec_pc, view_az, view_el, proj_gt)
+        total_loss.backward()
+        self.optimizer.step()
+        total_loss_np = total_loss.detach().item()
+        loss_2d_np = loss_2d.detach().item()
+        loss_3d_np = loss_3d.detach().item()
+        del total_loss, loss_2d, loss_3d
+        return total_loss_np, loss_2d_np, loss_3d_np
+
+
+def test_opt_gd(cfg):
     # Enable the inbuilt cudnn auto-tuner to find the best algorithm to use
     torch.backends.cudnn.benchmark = True
 
@@ -56,9 +118,9 @@ def test_opt_net(cfg):
     # The parameters here need to be set in cfg
     if cfg.NETWORK.REC_MODEL == 'GRAPHX':
         net = Pixel2Pointcloud_GRAPHX(cfg=cfg,
-                                      in_channels=1, 
+                                      in_channels=3, 
                                       in_instances=cfg.GRAPHX.NUM_INIT_POINTS,
-                                      optimizer=lambda x: torch.optim.Adam(x, lr=cfg.TRAIN.GRAPHX_LEARNING_RATE, weight_decay=cfg.TRAIN.GRAPHX_WEIGHT_DECAY),
+                                      optimizer=lambda x: torch.optim.Adam(x, lr=1, weight_decay=cfg.TRAIN.GRAPHX_WEIGHT_DECAY),
                                       scheduler=lambda x: MultiStepLR(x, milestones=cfg.TRAIN.MILESTONES, gamma=cfg.TRAIN.GAMMA),
                                       use_graphx=cfg.GRAPHX.USE_GRAPHX)
     
@@ -87,18 +149,9 @@ def test_opt_net(cfg):
     azi = 150.
     ele = 3.
 
-    # Load input image
-    sample = cv2.imread(input_img_path, cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255.
+    sample = cv2.imread(input_img_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.
+    sample = cv2.cvtColor(sample, cv2.COLOR_GRAY2RGB)
 
-    if cfg.NETWORK.REC_MODEL == 'PSGN_FC':
-        sample = cv2.resize(sample, (64, 64))
-    elif cfg.NETWORK.REC_MODEL == 'GRAPHX':
-        sample = cv2.resize(sample, (224, 224))
-    else:
-        print('Invalid model name, please check the config.py (NET_WORK.REC_MODEL)')
-        sys.exit(2)
-
-    sample = np.expand_dims(sample, -1)
     samples = []
     samples.append(sample)
     samples = np.array(samples).astype(np.float32) 
@@ -132,8 +185,7 @@ def test_opt_net(cfg):
     
     edge_gt = None
 
-    # Switch models to train mode
-    net.train()
+    net.eval()
     
     reconstruction_losses = utils.network_utils.AverageMeter()
     loss_2ds = utils.network_utils.AverageMeter()
@@ -151,18 +203,16 @@ def test_opt_net(cfg):
     batch_pc = np.array(batch_pc).astype(np.float32)
     batch_pc = torch.from_numpy(batch_pc)
 
-    # optimize loop
-    for opt_idx in range(100):
-
-        rendering_images = utils.network_utils.var_or_cuda(rendering_images)
+    opt_model = Opt_Model(cfg, rec_pc)
+    
+    for opt_idx in range(1000):
         batch_model_gt = utils.network_utils.var_or_cuda(batch_model_gt)
         batch_model_x = utils.network_utils.var_or_cuda(batch_model_x)
         batch_model_y = utils.network_utils.var_or_cuda(batch_model_y)
-        init_point_clouds = utils.network_utils.var_or_cuda(init_point_clouds)
         batch_pc = utils.network_utils.var_or_cuda(batch_pc)
-        
-        total_loss, loss_2d, loss_3d = net.module.learn(rendering_images, init_point_clouds, batch_pc, batch_model_x, batch_model_y, batch_model_gt, edge_gt)
-        pred_pc = net(rendering_images, init_point_clouds)
+
+        total_loss, loss_2d, loss_3d = opt_model.learn(batch_pc, batch_model_x, batch_model_y, batch_model_gt)
+        pred_pc = opt_model()
 
         reconstruction_losses.update(total_loss)
         loss_2ds.update(loss_2d)
@@ -178,11 +228,5 @@ def test_opt_net(cfg):
         g_pc = pred_pc[0].detach().cpu().numpy()
         rendering_views = utils.point_cloud_visualization.get_point_cloud_image(g_pc, os.path.join(img_dir, 'test opt'),
                                                                                         opt_idx, epoch_idx, "reconstruction")
-        opt_writer.add_image('Test Opt Sample#%02d/Point Cloud Reconstructed' % opt_idx, rendering_views, epoch_idx)
-
-
-
-
-
-
+        opt_writer.add_image('Test Opt Sample/Point Cloud Reconstructed', rendering_views, opt_idx)
 
